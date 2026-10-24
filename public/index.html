@@ -77,6 +77,12 @@
   .lesson-card { background: var(--bg2); border-radius: .5rem; padding: .8rem 1rem; margin: .6rem 0; }
   .lesson-card p { margin: .4rem 0; line-height: 1.55; font-size: .93rem; }
   .lesson-list button { display: block; width: 100%; text-align: left; margin: .3rem 0; }
+  .cmv { cursor: pointer; padding: .05rem .3rem; border-radius: .25rem; }
+  .cmv:hover { background: var(--panel2); }
+  .cmv.cur { background: var(--accent); color: #1a1a1a; font-weight: 600; }
+  #classic-moves { font-size: .9rem; line-height: 1.8; max-height: 260px; overflow-y: auto;
+    background: var(--bg2); padding: .5rem .7rem; border-radius: .4rem; }
+  #classic-moves .mn { color: var(--muted); margin-right: .3rem; }
   .kbd { background: var(--panel2); padding: .1rem .4rem; border-radius: .25rem; font-size: .8rem; }
   footer { text-align: center; color: var(--muted); font-size: .8rem; padding: 1rem; }
   @media (max-width: 900px) { main { flex-direction: column; } #board { grid-template-columns: repeat(8, 44px); grid-template-rows: repeat(8, 44px); } .sq { font-size: 32px; } }
@@ -109,6 +115,7 @@ import { Board, WHITE, BLACK, moveToUci, sqName, START_FEN, PIECE_LETTER } from 
 import { analyze, evaluate, formatScore, MATE_SCORE } from '/src/search.js';
 import { PUZZLES } from '/src/puzzles.js';
 import { LESSONS } from '/src/lessons.js';
+import { CLASSICS } from '/src/classics.js';
 
 const GLYPHS = { k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟' };
 const $ = s => document.querySelector(s);
@@ -130,6 +137,9 @@ try {
 } catch {}
 // lessons state
 let lessonIdx = 0, cardIdx = 0, exerciseDone = false;
+// classic games state (inside the Lessons tab)
+let lessonView = 'positional'; // 'positional' | 'classics'
+let classicIdx = 0, classicPly = 0, classicSans = [];
 
 // ---------- board rendering ----------
 function sqToXY(sq) {
@@ -221,7 +231,7 @@ function select(sq) {
 function canMoveNow() {
   if (engineThinking || analyzing) return false;
   if (mode === 'tactics') return !puzzleSolved;
-  if (mode === 'lessons') return exerciseActive();
+  if (mode === 'lessons') return lessonView === 'positional' && exerciseActive();
   if (mode === 'analyze' && vsEngine && board.turn === BLACK) return false;
   return true;
 }
@@ -471,11 +481,16 @@ function exerciseActive() {
   return cardIdx >= l.cards.length && !exerciseDone;
 }
 function renderLessons() {
+  if (lessonView === 'classics') return renderClassics();
   const l = LESSONS[lessonIdx];
   if (cardIdx < l.cards.length) {
     const c = l.cards[cardIdx];
     panelEl.innerHTML = `
       <h2>Positional Lessons</h2>
+      <div class="row" style="margin-bottom:.4rem">
+        <button class="btn primary" id="view-positional">Positional lessons</button>
+        <button class="btn" id="view-classics">Classic games · 100</button>
+      </div>
       <div class="row lesson-list" style="margin-bottom:.4rem">
         <select id="lesson-sel">${LESSONS.map((x, i) => `<option value="${i}" ${i === lessonIdx ? 'selected' : ''}>${x.title}</option>`).join('')}</select>
       </div>
@@ -485,6 +500,7 @@ function renderLessons() {
         <button class="btn primary" id="card-next">${cardIdx === l.cards.length - 1 ? 'Try the exercise →' : 'Next →'}</button>
       </div>
       <p style="color:var(--muted);font-size:.85rem">${l.intro}</p>`;
+    $('#view-classics').onclick = () => { lessonView = 'classics'; loadClassic(); };
     $('#lesson-sel').onchange = e => { lessonIdx = +e.target.value; cardIdx = 0; exerciseDone = false; loadLessonCard(); };
     $('#card-prev').onclick = () => { cardIdx--; loadLessonCard(); };
     $('#card-next').onclick = () => { cardIdx++; loadLessonCard(); };
@@ -493,6 +509,10 @@ function renderLessons() {
     const ex = l.exercise;
     panelEl.innerHTML = `
       <h2>Positional Lessons</h2>
+      <div class="row" style="margin-bottom:.4rem">
+        <button class="btn primary" id="view-positional">Positional lessons</button>
+        <button class="btn" id="view-classics">Classic games · 100</button>
+      </div>
       <div class="row"><select id="lesson-sel">${LESSONS.map((x, i) => `<option value="${i}" ${i === lessonIdx ? 'selected' : ''}>${x.title}</option>`).join('')}</select></div>
       <div class="lesson-card"><p><b>Your turn — ${l.title}</b></p><p>${ex.prompt}</p>
       <div id="ex-feedback" style="min-height:1.6rem;margin-top:.4rem"></div></div>
@@ -501,6 +521,7 @@ function renderLessons() {
         <button class="btn" id="ex-retry">Retry</button>
         <button class="btn" id="card-prev">← Back to cards</button>
       </div>`;
+    $('#view-classics').onclick = () => { lessonView = 'classics'; loadClassic(); };
     $('#lesson-sel').onchange = e => { lessonIdx = +e.target.value; cardIdx = 0; exerciseDone = false; loadLessonCard(); };
     $('#ex-hint').onclick = () => { $('#ex-feedback').textContent = ex.hint; };
     $('#ex-retry').onclick = loadLessonCard;
@@ -515,6 +536,84 @@ function loadLessonCard() {
   moveHistory = []; lastMove = null; bestArrow = null; selected = -1;
   exerciseDone = false;
   render(); renderLessons();
+}
+// ----- classic games (top 100) -----
+function classicGame() { return CLASSICS[classicIdx]; }
+function shortName(full) {
+  // "Garry Kasparov" -> "Kasparov"; multi-name black like "Duke Karl / Count Isouard" kept whole
+  if (full.includes('/')) return full;
+  const parts = full.split(' ');
+  return parts.length > 1 ? parts[parts.length - 1] : full;
+}
+function resultText(r) {
+  return r === '1-0' ? 'White wins' : r === '0-1' ? 'Black wins' : r === '1/2-1/2' ? 'Draw' : r;
+}
+function loadClassic() {
+  const g = classicGame();
+  // SAN list, derived by replaying the UCI moves with the ENGINE's toSan
+  // (the page's toSan reads the live board, not a replay board).
+  const b = Board.fromFEN(START_FEN);
+  classicSans = [];
+  for (const uci of g.moves) {
+    const m = b.legalMoves().find(x => moveToUci(x) === uci);
+    if (!m) break;
+    classicSans.push(b.toSan(m));
+    b.make(m);
+  }
+  setClassicPly(0);
+}
+function setClassicPly(ply) {
+  const g = classicGame();
+  ply = Math.max(0, Math.min(g.moves.length, ply));
+  classicPly = ply;
+  board = Board.fromFEN(START_FEN);
+  moveHistory = []; lastMove = null; bestArrow = null; selected = -1; legalCache = [];
+  for (let i = 0; i < ply; i++) {
+    const m = board.legalMoves().find(x => moveToUci(x) === g.moves[i]);
+    if (!m) break;
+    board.make(m);
+    moveHistory.push({ uci: g.moves[i], san: classicSans[i] });
+    lastMove = { from: m.from, to: m.to };
+  }
+  render(); renderLessons();
+}
+function renderClassics() {
+  const g = classicGame();
+  let movesHtml = '';
+  for (let i = 0; i < classicSans.length; i += 2) {
+    movesHtml += `<span class="mn">${i / 2 + 1}.</span> ` +
+      `<span class="cmv${i + 1 === classicPly ? ' cur' : ''}" data-ply="${i + 1}">${classicSans[i]}</span>` +
+      (classicSans[i + 1] ? ` <span class="cmv${i + 2 === classicPly ? ' cur' : ''}" data-ply="${i + 2}">${classicSans[i + 1]}</span>` : '') + ' ';
+  }
+  const done = classicPly >= g.moves.length;
+  panelEl.innerHTML = `
+    <h2>Classic Games</h2>
+    <div class="row" style="margin-bottom:.4rem">
+      <button class="btn" id="view-positional">Positional lessons</button>
+      <button class="btn primary" id="view-classics">Classic games · 100</button>
+    </div>
+    <div class="row"><select id="classic-sel">${CLASSICS.map((x, i) =>
+      `<option value="${i}" ${i === classicIdx ? 'selected' : ''}>${i + 1}. ${shortName(x.white)} vs ${shortName(x.black)} (${x.date.slice(0, 4)})</option>`).join('')}</select></div>
+    <div class="lesson-card"><p><b>${g.white} vs ${g.black}</b></p>
+    <p style="color:var(--muted)">${g.event}${g.site ? ` · ${g.site}` : ''} · ${g.date.slice(0, 4)}${g.eco ? ` · ${g.eco}` : ''}</p>
+    <p>Move ${classicPly} of ${g.moves.length}${done ? ` — ${resultText(g.result)}` : ''}</p></div>
+    <div id="classic-moves">${movesHtml}</div>
+    <div class="row">
+      <button class="btn" id="cl-start" ${classicPly === 0 ? 'disabled' : ''}>⏮ Start</button>
+      <button class="btn" id="cl-prev" ${classicPly === 0 ? 'disabled' : ''}>← Prev</button>
+      <button class="btn primary" id="cl-next" ${done ? 'disabled' : ''}>Next →</button>
+      <button class="btn" id="cl-end" ${done ? 'disabled' : ''}>End ⏭</button>
+    </div>
+    <p style="color:var(--muted);font-size:.85rem">Top 100 games of all time, from chessgames.com's World's Greatest Chess Games collection. Step with ← → or click any move.</p>`;
+  $('#view-positional').onclick = () => { lessonView = 'positional'; cardIdx = 0; loadLessonCard(); };
+  $('#classic-sel').onchange = e => { classicIdx = +e.target.value; loadClassic(); };
+  $('#cl-start').onclick = () => setClassicPly(0);
+  $('#cl-prev').onclick = () => setClassicPly(classicPly - 1);
+  $('#cl-next').onclick = () => setClassicPly(classicPly + 1);
+  $('#cl-end').onclick = () => setClassicPly(g.moves.length);
+  document.querySelectorAll('#classic-moves .cmv').forEach(el => {
+    el.onclick = () => setClassicPly(+el.dataset.ply);
+  });
 }
 function onLessonMove(m) {
   const l = LESSONS[lessonIdx];
@@ -541,7 +640,11 @@ document.querySelectorAll('nav button').forEach(b => {
     mode = b.dataset.mode;
     bestArrow = null; analysisResult = null; selected = -1;
     if (mode === 'tactics') loadPuzzle();
-    else if (mode === 'lessons') { cardIdx = 0; loadLessonCard(); return; }
+    else if (mode === 'lessons') {
+      if (lessonView === 'classics') loadClassic();
+      else { cardIdx = 0; loadLessonCard(); }
+      return;
+    }
     else { board = Board.fromFEN(START_FEN); moveHistory = []; lastMove = null; vsEngine = false; }
     render(); renderPanel();
   };
@@ -551,6 +654,11 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === 'f' || e.key === 'F') { flipped = !flipped; render(); }
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // step through a classic game in the Lessons tab
+    if (mode === 'lessons' && lessonView === 'classics') {
+      setClassicPly(classicPly + (e.key === 'ArrowRight' ? 1 : -1));
+      return;
+    }
     // step through analyze move history
     if (mode !== 'analyze' || !moveHistory.length) return;
     // simple: rebuild to a given ply via data attr

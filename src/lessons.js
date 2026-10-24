@@ -11,7 +11,7 @@ export const LESSONS = [
         text: 'White has just played d4. The d4 pawn has no pawn neighbors — it is an isolated queen’s pawn (IQP). It controls e5 and c5, giving White space and attacking chances.' },
       { fen: 'r1bqk2r/ppp2ppp/2n2n2/3p4/3PP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 0 1',
         text: 'Black’s plan: blockade the pawn with a knight (…Nf6–d5), then pile up attackers. A blockaded IQP cannot advance and becomes a permanent weakness.' },
-      { fen: 'r1bq1rk1/ppp2ppp/2n2n2/3p4/3PP3/2N2N2/PPPQ1PPP/R1BQKB1R w - - 0 1',
+      { fen: 'r1bq1rk1/ppp2ppp/2n2n2/3p4/3PP3/2N2N2/PPPQ1PPP/R1B1KB1R w - - 0 1',
         text: 'White’s plan: use the IQP’s energy before it gets blockaded — push d5 at the right moment, or use the e5 and c5 squares it supports for the pieces.' },
     ],
     exercise: {
@@ -42,9 +42,9 @@ export const LESSONS = [
     id: 'open-files', title: 'Open Files and the Seventh Rank',
     intro: 'Rooks belong on open files. And a rook on the seventh rank is worth a pawn by itself.',
     cards: [
-      { fen: '4k3/8/8/8/8/8/5PPP/4R1K1 w - - 0 1',
-        text: 'The e-file is open — no pawns on it. White’s rook already owns it, x-raying the black king.' },
-      { fen: '4k3/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1',
+      { fen: '6k1/8/8/8/8/8/5PPP/4R1K1 w - - 0 1',
+        text: 'The e-file is open — no pawns on it. White’s rook already owns it, bearing down the file.' },
+      { fen: '6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1',
         text: 'Now imagine the rook on e7: it would attack f7, g7 and h7, and trap the king. Getting a rook to the seventh is often decisive.' },
     ],
     exercise: {

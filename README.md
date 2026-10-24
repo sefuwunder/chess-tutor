@@ -21,6 +21,9 @@ A self-hosted web app for learning chess — not just a board, but a teacher. Th
 **Positional lessons**
 - 6 guided lessons: isolated queen's pawn, outposts, open files & 7th rank, bishop pair, king safety, passed pawns
 - Each lesson: 2–4 cards with board positions, ending in an engine-checked exercise
+- **Classic games — top 100 games of all time**: step through the greatest games ever played (1834–1999, from chessgames.com's World's Greatest Chess Games collection, plus the Opera Game, Torre's Windmill, and Kasparov's Immortal) with a clickable move list, Prev/Next/Start/End, and ← → stepping
+
+**Position sanity** — every curated position (all puzzles, lesson cards, exercises, and all 6,989 classic-game positions) must pass `Board.validate()`: exactly one king per side, kings not adjacent, no pawns on the back rank, legal piece counts, game not already over, side not to move never in check. The old "solution is engine-best" check passed illegal setups (a king in check before move one, a duplicated queen); the sanity suite closes that gap.
 
 ## Engine (written from scratch, no stockfish)
 

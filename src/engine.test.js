@@ -66,8 +66,81 @@ describe('rules', () => {
     expect(b.legalMoves().length).toBe(0);
   });
   test('king capture never generated', () => {
-    const b = Board.fromFEN('4k3/8/8/8/8/8/4RPPP/4Q1K1 w - - 0 1');
-    for (const m of b.legalMoves()) expect(m.captured).not.toBe(KING);
+    const b2 = Board.fromFEN('4k3/4p3/8/8/8/8/4RPPP/4Q1K1 w - - 0 1');
+    for (const m of b2.legalMoves()) expect(m.captured).not.toBe(KING);
+  });
+});
+
+describe('position sanity — tutor game state', () => {
+  // The engine happily searches from impossible positions, so the old
+  // "solution is engine-best" check passed illegal setups (a king in check
+  // before the first move, two queens on one side, 17 pieces). validate()
+  // is the gate: every curated position must pass it, and every solution
+  // line must be legal from its position.
+  test('validate flags each hard illegality', () => {
+    const cases = [
+      ['no white king', '4k3/8/8/8/8/8/8/8 w - - 0 1'],
+      ['two white kings', '4k3/8/8/8/8/8/8/4K1K1 w - - 0 1'],
+      ['kings adjacent', '4k3/5K2/8/8/8/8/8/8 w - - 0 1'],
+      ['pawn on 1st rank', '4k3/8/8/8/8/8/8/4P1K1 w - - 0 1'],
+      ['pawn on 8th rank', '4p1k1/8/8/8/8/8/8/4K3 w - - 0 1'],
+      ['17 white pieces', 'r1bq1rk1/ppp2ppp/2n2n2/3p4/3PP3/2N2N2/PPPQ1PPP/R1BQKB1R w - - 0 1'],
+      ['side not to move in check', '4k3/8/8/8/8/8/4RPPP/4Q1K1 w - - 0 1'],
+      ['game already over (mate)', '2R3k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1'],
+    ];
+    for (const [label, fen] of cases) {
+      const problems = Board.fromFEN(fen).validate();
+      expect(problems.length, `${label} (${fen})`).toBeGreaterThan(0);
+    }
+  });
+
+  test('validate passes legal positions, including starting in check', () => {
+    expect(Board.fromFEN(START_FEN).validate()).toEqual([]);
+    // starting in check is legal: white to move, in check from a rook
+    expect(Board.fromFEN('4k3/8/8/8/8/8/4r3/4K3 w - - 0 1').validate()).toEqual([]);
+  });
+
+  test('every puzzle position is sane and its solution line is legal', () => {
+    for (const p of PUZZLES) {
+      const problems = Board.fromFEN(p.fen).validate();
+      expect(problems, `puzzle ${p.id} "${p.title}"`).toEqual([]);
+      const b = Board.fromFEN(p.fen);
+      for (const u of p.solution) {
+        const m = b.moveFromUci(u);
+        expect(m, `puzzle ${p.id}: solution move ${u} must be legal`).not.toBeNull();
+        if (m) b.make(m);
+      }
+    }
+  });
+
+  test('every lesson card and exercise position is sane; exercise solutions legal', () => {
+    for (const l of LESSONS) {
+      l.cards.forEach((c, i) => {
+        const problems = Board.fromFEN(c.fen).validate();
+        expect(problems, `lesson ${l.id} card ${i}`).toEqual([]);
+      });
+      const exProblems = Board.fromFEN(l.exercise.fen).validate();
+      expect(exProblems, `lesson ${l.id} exercise`).toEqual([]);
+      const b = Board.fromFEN(l.exercise.fen);
+      for (const s of l.exercise.solutions) {
+        expect(b.moveFromUci(s), `lesson ${l.id}: exercise solution ${s} must be legal`).not.toBeNull();
+      }
+    }
+  });
+
+  test('mate-claimed puzzle solutions actually deliver mate', () => {
+    // Motifs that promise mate in one: the solution must end the game.
+    for (const p of PUZZLES) {
+      if (p.motif !== 'Mate' && p.motif !== 'Back-rank mate') continue;
+      if (p.solution.length !== 1) continue;
+      const b = Board.fromFEN(p.fen);
+      const m = b.moveFromUci(p.solution[0]);
+      expect(m, `puzzle ${p.id}: solution must be legal`).not.toBeNull();
+      if (!m) continue;
+      b.make(m);
+      const res = b.gameResult();
+      expect(res, `puzzle ${p.id} "${p.title}": ${p.solution[0]} must mate, got ${res}`).toMatch(/1-0|0-1/);
+    }
   });
 });
 

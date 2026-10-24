@@ -349,6 +349,48 @@ export class Board {
     return null;
   }
 
+  // Position sanity: hard legality invariants for curated tutor positions.
+  // Returns a list of problems; empty means the position could occur in a
+  // real game with this side to move. This is NOT a full reachability proof
+  // (no retrograde analysis) — it catches the impossible setups that slip
+  // past move generation: missing/extra kings, adjacent kings, pawns on the
+  // back rank, impossible piece counts, a game already over, the side NOT
+  // to move in check, or no legal move for the side to move. Starting in
+  // check is legal and is not flagged.
+  validate() {
+    const problems = [];
+    let wk = 0, bk = 0, wp = 0, bp = 0, wPawns = 0, bPawns = 0;
+    for (let sq = 0; sq < 128; sq++) {
+      if (!onBoard(sq)) continue;
+      const p = this.b[sq];
+      if (!p) continue;
+      const t = pieceType(p), c = pieceColor(p);
+      if (t === KING) { if (c === WHITE) wk++; else bk++; }
+      if (t === PAWN) {
+        if (sq < 16 || sq >= 112) problems.push('pawn on 1st/8th rank');
+        if (c === WHITE) wPawns++; else bPawns++;
+      }
+      if (c === WHITE) wp++; else bp++;
+    }
+    if (wk !== 1) problems.push(`white kings: ${wk}`);
+    if (bk !== 1) problems.push(`black kings: ${bk}`);
+    if (wk === 1 && bk === 1) {
+      const wks = this.kingSq[WHITE], bks = this.kingSq[BLACK];
+      if (Math.abs((wks & 7) - (bks & 7)) <= 1 && Math.abs((wks >> 4) - (bks >> 4)) <= 1) {
+        problems.push('kings adjacent');
+      }
+    }
+    if (wp > 16) problems.push(`too many white pieces: ${wp}`);
+    if (bp > 16) problems.push(`too many black pieces: ${bp}`);
+    if (wPawns > 8) problems.push(`too many white pawns: ${wPawns}`);
+    if (bPawns > 8) problems.push(`too many black pawns: ${bPawns}`);
+    const other = opp(this.turn);
+    if (this.inCheck(other)) problems.push('side not to move is in check');
+    const res = this.gameResult();
+    if (res) problems.push(`game already over: ${res}`);
+    return problems;
+  }
+
   // SAN for a move (requires the move to be legal in current position)
   toSan(m) {
     if (m.flags === 'k') return 'O-O';
