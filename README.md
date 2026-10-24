@@ -15,8 +15,16 @@ A self-hosted web app for learning chess — not just a board, but a teacher. Th
 
 **Tactics trainer**
 - 24 curated puzzles across motifs: forks, pins, skewers, discovered attacks, double checks, back-rank mates, deflection, decoy, clearance, x-ray
+- **Real games · 24**: positions from the top-100 classic games, with attribution (players, event, year, move number) — mate-in-1s the masters actually played, plus captures that swung the eval by 200+ cp. Same bar as curated: engine-best at depth 4 and winning, sanity-gated, and every attribution verified by replaying the source game to the puzzle ply
 - Every puzzle engine-verified: the solution is the engine's best move at depth 4 and winning
 - Streak counter, score, hint button (motif + target square), retry, next; progress persists in localStorage
+
+**Today — the daily tutor (no chat, on purpose)**
+- The agent observes play, not typing: puzzle attempts (solved, hinted, failed), lesson exercises, games vs the engine (per-move cost vs the engine's best at depth 2, blunders counted), and classic games stepped through to the end
+- Each day it builds a plan from that history: weakest motif with 3+ attempts becomes the focus, failed/hinted/stale puzzles come back as reviews first, then unseen puzzles from the weakest motifs, plus one study item (a lesson or a classic game, alternating days, avoiding repeats)
+- The plan is deterministic for a given day and history — same inputs, same plan — and every item is a jump link into a puzzle, lesson, or game
+- Progress view: day streak, puzzles solved, games W/L/D, games studied, and per-motif mastery bars
+- No chat box, no free-text input: the tutor speaks only through the plan, and the user answers by playing
 
 **Positional lessons**
 - 6 guided lessons: isolated queen's pawn, outposts, open files & 7th rank, bishop pair, king safety, passed pawns

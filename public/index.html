@@ -84,6 +84,11 @@
     background: var(--bg2); padding: .5rem .7rem; border-radius: .4rem; }
   #classic-moves .mn { color: var(--muted); margin-right: .3rem; }
   .kbd { background: var(--panel2); padding: .1rem .4rem; border-radius: .25rem; font-size: .8rem; }
+  .plan-row { display: flex; justify-content: space-between; gap: .6rem; padding: .5rem .3rem;
+    border-bottom: 1px solid var(--panel); cursor: pointer; font-size: .92rem; }
+  .plan-row:hover { background: var(--panel2); border-radius: .3rem; }
+  .bar { height: .4rem; background: var(--bg2); border-radius: .2rem; overflow: hidden; margin-top: .2rem; }
+  .bar i { display: block; height: 100%; background: var(--good); }
   footer { text-align: center; color: var(--muted); font-size: .8rem; padding: 1rem; }
   @media (max-width: 900px) { main { flex-direction: column; } #board { grid-template-columns: repeat(8, 44px); grid-template-rows: repeat(8, 44px); } .sq { font-size: 32px; } }
 </style>
@@ -92,7 +97,8 @@
 <header>
   <h1>♞ Chess Tutor <span>positional analysis &amp; tactics</span></h1>
   <nav>
-    <button data-mode="analyze" class="active">Analyze</button>
+    <button data-mode="today" class="active">Today</button>
+    <button data-mode="analyze">Analyze</button>
     <button data-mode="tactics">Tactics</button>
     <button data-mode="lessons">Lessons</button>
   </nav>
@@ -116,6 +122,8 @@ import { analyze, evaluate, formatScore, MATE_SCORE } from '/src/search.js';
 import { PUZZLES } from '/src/puzzles.js';
 import { LESSONS } from '/src/lessons.js';
 import { CLASSICS } from '/src/classics.js';
+import { REAL_PUZZLES } from '/src/real-puzzles.js';
+import { createStore, planForDay, progressSummary, puzzleDoneToday, todayStr } from '/src/progress.js';
 
 const GLYPHS = { k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟' };
 const $ = s => document.querySelector(s);
@@ -127,13 +135,36 @@ let flipped = false, selected = -1, legalCache = [];
 let moveHistory = []; // {uci, san}
 let lastMove = null, analyzing = false, engineDepth = 3;
 let vsEngine = false, engineThinking = false;
-let mode = 'analyze';
+let mode = 'today';
 
-// tactics state
-let puzzleIdx = 0, streak = 0, score = 0, puzzleSolved = false, hintUsed = false;
+// ---------- daily-tutor observation ----------
+// The agent: no chat, no input box. It watches play (puzzles, exercises,
+// games vs the engine, classics studied) and builds today's plan from it.
+const tutorStore = createStore(localStorage);
+let puzzleWrong = 0; // wrong attempts on the current puzzle
+let gameMoves = []; // {cost} per user move in the current vs-engine game
+let gameFlushed = false;
+let preUserBoard = null, postUserBoard = null;
+function recordTutorEvent(ev) {
+  try { tutorStore.record({ ...ev, date: todayStr() }); } catch {}
+}
+function flushPuzzleAttempt() {
+  if (puzzleSolved || puzzleWrong === 0) return;
+  const p = currentPuzzle();
+  recordTutorEvent({ kind: 'puzzle', set: puzzleSet, id: p.id, motif: p.motif, solved: false, hint: hintUsed, attempts: puzzleWrong });
+}
+function flushGameEvent() {
+  if (gameFlushed || !gameOver()) return;
+  gameFlushed = true;
+  const chk = board.inCheck(board.turn);
+  const result = !chk ? 'draw' : (board.turn === BLACK ? 'win' : 'loss');
+  recordTutorEvent({ kind: 'game', result, plies: moveHistory.length, userMoves: gameMoves.length, blunders: gameMoves.filter(m => m.cost > 200).length });
+}
+let puzzleSet = 'curated', realPuzzleIdx = 0; // 'curated' | 'real'
 try {
   const s = JSON.parse(localStorage.getItem('chess-tutor-tactics') || '{}');
   streak = s.streak || 0; score = s.score || 0; puzzleIdx = s.puzzleIdx || 0;
+  realPuzzleIdx = s.realPuzzleIdx || 0; puzzleSet = s.puzzleSet || 'curated';
 } catch {}
 // lessons state
 let lessonIdx = 0, cardIdx = 0, exerciseDone = false;
@@ -230,6 +261,7 @@ function select(sq) {
 }
 function canMoveNow() {
   if (engineThinking || analyzing) return false;
+  if (mode === 'today') return false; // the Today board is a backdrop, not a game
   if (mode === 'tactics') return !puzzleSolved;
   if (mode === 'lessons') return lessonView === 'positional' && exerciseActive();
   if (mode === 'analyze' && vsEngine && board.turn === BLACK) return false;
@@ -264,8 +296,15 @@ function tryMove(from, to, promo) {
   let m = moves.find(x => (x.promo || 0) === (promo || 0)) || moves.find(x => !x.promo) || moves[0];
   // auto-queen if multiple promos and none chosen
   if (moves.length > 1 && moves[0].promo && !promo) m = moves.find(x => x.promo === 5) || moves[0];
+  // tutor observation: snapshot around the user's move in vs-engine games
+  if (mode === 'analyze' && vsEngine && board.turn === WHITE) {
+    preUserBoard = board.clone();
+  } else {
+    preUserBoard = null;
+  }
   const san = toSan(m);
   const undo = board.make(m);
+  if (preUserBoard) postUserBoard = board.clone();
   moveHistory.push({ uci: moveToUci(m), san });
   lastMove = { from, to };
   selected = -1; legalCache = [];
@@ -276,15 +315,33 @@ function afterMove(m) {
   render(); renderPanel();
   if (mode === 'tactics') onTacticsMove(m);
   else if (mode === 'lessons') onLessonMove(m);
-  else if (mode === 'analyze' && vsEngine && board.turn === BLACK && !gameOver()) {
-    engineThinking = true; renderPanel();
-    setTimeout(() => {
-      const r = analyze(fenOf(board), engineDepth, 4000);
-      engineThinking = false;
-      const bm = board.legalMoves().find(x => moveToUci(x) === r.bestUci);
-      if (bm) { const san = toSan(bm); board.make(bm); moveHistory.push({ uci: r.bestUci, san }); lastMove = { from: bm.from, to: bm.to }; }
-      render(); renderPanel();
-    }, 60);
+  else if (mode === 'analyze' && vsEngine) {
+    // tutor observation: score the user's move vs the engine's best (depth 2,
+    // deferred so it never delays the engine reply or the UI)
+    if (preUserBoard && postUserBoard) {
+      const pre = preUserBoard, post = postUserBoard;
+      preUserBoard = null; postUserBoard = null;
+      setTimeout(() => {
+        try {
+          const best = analyze(fenOf(pre), 2, 3000).score;
+          const played = -analyze(fenOf(post), 2, 3000).score;
+          gameMoves.push({ cost: best - played });
+        } catch {}
+      }, 0);
+    }
+    if (board.turn === BLACK && !gameOver()) {
+      engineThinking = true; renderPanel();
+      setTimeout(() => {
+        const r = analyze(fenOf(board), engineDepth, 4000);
+        engineThinking = false;
+        const bm = board.legalMoves().find(x => moveToUci(x) === r.bestUci);
+        if (bm) { const san = toSan(bm); board.make(bm); moveHistory.push({ uci: r.bestUci, san }); lastMove = { from: bm.from, to: bm.to }; }
+        render(); renderPanel();
+        if (gameOver()) flushGameEvent();
+      }, 60);
+    } else if (gameOver()) {
+      flushGameEvent();
+    }
   }
 }
 function fenOf(b) {
@@ -324,6 +381,7 @@ function gameOver() {
 function renderPanel() {
   if (mode === 'analyze') renderAnalyze();
   else if (mode === 'tactics') renderTactics();
+  else if (mode === 'today') renderToday();
   else renderLessons();
 }
 
@@ -373,7 +431,7 @@ function renderAnalyze() {
   $('#new-btn').onclick = () => {
     board = Board.fromFEN(START_FEN); moveHistory = []; lastMove = null;
     analysisResult = null; bestArrow = null; vsEngine = true;
-    selected = -1; render(); renderPanel();
+    selected = -1; gameMoves = []; gameFlushed = false; render(); renderPanel();
   };
   $('#takeback-btn').onclick = () => {
     // take back one full round (or one ply if engine not involved)
@@ -387,6 +445,9 @@ function renderAnalyze() {
       if (!m) break;
       board.make(m); moveHistory.push(mh); lastMove = { from: m.from, to: m.to };
     }
+    // tutor: drop observations for the taken-back user moves, reopen the game
+    gameMoves = gameMoves.slice(0, Math.ceil(keep.length / 2));
+    gameFlushed = false;
     analysisResult = null; bestArrow = null; render(); renderPanel();
   };
   $('#fen-copy').onclick = () => { $('#fen-in').select(); document.execCommand('copy'); };
@@ -414,25 +475,50 @@ function runAnalysis() {
 }
 
 // ----- tactics -----
-function currentPuzzle() { return PUZZLES[puzzleIdx % PUZZLES.length]; }
+function currentPuzzle() {
+  if (puzzleSet === 'real' && REAL_PUZZLES.length) {
+    return REAL_PUZZLES[realPuzzleIdx % REAL_PUZZLES.length];
+  }
+  return PUZZLES[puzzleIdx % PUZZLES.length];
+}
+function currentPuzzleNum() {
+  return puzzleSet === 'real' ? realPuzzleIdx + 1 : puzzleIdx + 1;
+}
+function advancePuzzle() {
+  if (puzzleSet === 'real') realPuzzleIdx++;
+  else puzzleIdx++;
+}
 function saveTactics() {
-  try { localStorage.setItem('chess-tutor-tactics', JSON.stringify({ streak, score, puzzleIdx })); } catch {}
+  try { localStorage.setItem('chess-tutor-tactics', JSON.stringify({ streak, score, puzzleIdx, realPuzzleIdx, puzzleSet })); } catch {}
 }
 function loadPuzzle() {
   const p = currentPuzzle();
   board = Board.fromFEN(p.fen);
   moveHistory = []; lastMove = null; bestArrow = null;
-  puzzleSolved = false; hintUsed = false; selected = -1;
+  puzzleSolved = false; hintUsed = false; selected = -1; puzzleWrong = 0;
   render();
+}
+function sourceLine(p) {
+  if (!p.source) return '';
+  const s = p.source;
+  const bits = [`${s.white} vs ${s.black}`];
+  if (s.event) bits.push(s.event);
+  if (s.date) bits.push(s.date.slice(0, 4));
+  return `<p style="font-size:.85rem;color:var(--muted)">From ${bits.join(' · ')} — move ${s.moveNo}</p>`;
 }
 function renderTactics() {
   const p = currentPuzzle();
   const toMove = p.fen.includes(' b ') ? 'Black' : 'White';
   panelEl.innerHTML = `
     <h2>Tactics Trainer</h2>
-    <div class="stat"><span>Streak <b>${streak}</b></span><span>Score <b>${score}</b></span><span>Puzzle <b>${puzzleIdx + 1}</b></span></div>
+    <div class="row" style="margin-bottom:.4rem">
+      <button class="btn${puzzleSet === 'curated' ? ' primary' : ''}" id="set-curated">Curated puzzles</button>
+      <button class="btn${puzzleSet === 'real' ? ' primary' : ''}" id="set-real">Real games · ${REAL_PUZZLES.length}</button>
+    </div>
+    <div class="stat"><span>Streak <b>${streak}</b></span><span>Score <b>${score}</b></span><span>Puzzle <b>${currentPuzzleNum()}</b></span></div>
     <p style="font-size:.93rem"><b>${toMove} to play and win.</b><br>
     <span style="color:var(--muted)">Find the winning move.</span></p>
+    ${sourceLine(p)}
     <div id="puzzle-feedback"></div>
     <div class="row">
       <button class="btn" id="hint-btn">Hint</button>
@@ -440,17 +526,28 @@ function renderTactics() {
       <button class="btn primary" id="next-btn">Next →</button>
     </div>
     <div id="hint-box" style="font-size:.88rem;color:var(--muted);margin-top:.4rem"></div>`;
+  $('#set-curated').onclick = () => { flushPuzzleAttempt(); puzzleSet = 'curated'; saveTactics(); loadPuzzle(); renderPanel(); };
+  $('#set-real').onclick = () => {
+    if (!REAL_PUZZLES.length) return;
+    flushPuzzleAttempt();
+    puzzleSet = 'real'; saveTactics(); loadPuzzle(); renderPanel();
+  };
+  if (!REAL_PUZZLES.length) $('#set-real').disabled = true;
   $('#hint-btn').onclick = () => {
     hintUsed = true;
-    const target = sqName(parseInt(currentPuzzle().solution[0].slice(2, 4), 10) * 0 + uciToSq(currentPuzzle().solution[0].slice(2)));
     $('#hint-box').innerHTML = `Motif: <b>${p.motif}</b> · first move lands on <b>${sqName(uciToSq(p.solution[0].slice(2)))}</b>`;
-    void target;
   };
   $('#retry-btn').onclick = loadPuzzle;
-  $('#next-btn').onclick = () => { puzzleIdx++; saveTactics(); loadPuzzle(); renderPanel(); };
+  $('#next-btn').onclick = () => { flushPuzzleAttempt(); advancePuzzle(); saveTactics(); loadPuzzle(); renderPanel(); };
   if (puzzleSolved) {
     $('#puzzle-feedback').className = 'good';
     $('#puzzle-feedback').textContent = `Correct! ${p.title} — ${p.lesson}`;
+  }
+  // same pattern as the solved case: renderTactics rebuilds the panel, so a
+  // wrong-move note must be re-applied here, not set before the rebuild
+  if (!puzzleSolved && puzzleWrong > 0) {
+    $('#puzzle-feedback').className = 'bad';
+    $('#puzzle-feedback').textContent = 'Not it — try again (Retry resets the board).';
   }
 }
 function uciToSq(s) {
@@ -464,13 +561,14 @@ function onTacticsMove(m) {
     puzzleSolved = true;
     streak++; score += hintUsed ? 5 : 10;
     saveTactics();
+    recordTutorEvent({ kind: 'puzzle', set: puzzleSet, id: p.id, motif: p.motif, solved: true, hint: hintUsed, attempts: puzzleWrong + 1 });
     if (fb) { fb.className = 'good'; fb.textContent = `Correct! ${p.title} — ${p.lesson}`; }
     // auto-advance after a beat
-    setTimeout(() => { if (puzzleSolved) { puzzleIdx++; saveTactics(); loadPuzzle(); renderPanel(); } }, 1800);
+    setTimeout(() => { if (puzzleSolved) { advancePuzzle(); saveTactics(); loadPuzzle(); renderPanel(); } }, 1800);
   } else {
+    puzzleWrong++;
     streak = 0; saveTactics();
-    if (fb) { fb.className = 'bad'; fb.textContent = 'Not it — try again (Retry resets the board).'; }
-    renderTactics();
+    renderTactics(); // re-applies the "Not it" note via the puzzleWrong block
   }
   renderPanel();
 }
@@ -564,6 +662,7 @@ function loadClassic() {
 }
 function setClassicPly(ply) {
   const g = classicGame();
+  const prevPly = classicPly;
   ply = Math.max(0, Math.min(g.moves.length, ply));
   classicPly = ply;
   board = Board.fromFEN(START_FEN);
@@ -574,6 +673,13 @@ function setClassicPly(ply) {
     board.make(m);
     moveHistory.push({ uci: g.moves[i], san: classicSans[i] });
     lastMove = { from: m.from, to: m.to };
+  }
+  // tutor: stepping into the final position counts as studying the game
+  // (jumping with End does not — arriving from the last move is the signal)
+  if (ply === g.moves.length && prevPly === g.moves.length - 1) {
+    const today = todayStr();
+    const already = tutorStore.load().some(e => e.kind === 'study' && e.date === today && e.game === classicIdx);
+    if (!already) recordTutorEvent({ kind: 'study', game: classicIdx });
   }
   render(); renderLessons();
 }
@@ -623,6 +729,7 @@ function onLessonMove(m) {
   const fb = $('#ex-feedback');
   if (ex.solutions.includes(uci)) {
     exerciseDone = true;
+    recordTutorEvent({ kind: 'exercise', lessonId: l.id, solved: true });
     if (fb) fb.innerHTML = '<span style="color:var(--good)">Well played — exercise complete.</span>';
   } else {
     // engine check: is it at least reasonable?
@@ -632,22 +739,80 @@ function onLessonMove(m) {
   renderLessons();
 }
 
-// ---------- mode tabs & keyboard ----------
-document.querySelectorAll('nav button').forEach(b => {
-  b.onclick = () => {
-    document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    mode = b.dataset.mode;
-    bestArrow = null; analysisResult = null; selected = -1;
-    if (mode === 'tactics') loadPuzzle();
-    else if (mode === 'lessons') {
-      if (lessonView === 'classics') loadClassic();
-      else { cardIdx = 0; loadLessonCard(); }
-      return;
+// ----- today: the daily-tutor plan -----
+// No chat here on purpose. The plan is computed from observed play, and the
+// user acts on it by playing — every click below jumps into a puzzle, a
+// lesson, or a classic game.
+function renderToday() {
+  const events = tutorStore.load();
+  const date = todayStr();
+  const plan = planForDay(events, { curated: PUZZLES, real: REAL_PUZZLES, lessons: LESSONS, classics: CLASSICS }, date);
+  const sum = progressSummary(events, date);
+  const puzzleRows = plan.puzzles.map(p => {
+    const done = puzzleDoneToday(events, date, p);
+    return `<div class="plan-row" data-set="${p.set}" data-index="${p.index}"><span>${done ? '✓' : '○'} <b>${p.title}</b> <span style="color:var(--muted)">· ${p.motif}</span></span><span style="color:var(--muted)">${p.set === 'real' ? 'real game' : 'curated'}</span></div>`;
+  }).join('');
+  let studyRow = '';
+  if (plan.study) {
+    if (plan.study.type === 'lesson') {
+      studyRow = `<div class="plan-row" id="study-row"><span>📖 <b>${plan.study.lesson.title}</b></span><span style="color:var(--muted)">lesson</span></div>`;
+    } else {
+      const g = plan.study.game;
+      studyRow = `<div class="plan-row" id="study-row"><span>📖 <b>${shortName(g.white)} vs ${shortName(g.black)} (${g.date.slice(0, 4)})</b></span><span style="color:var(--muted)">classic game</span></div>`;
     }
-    else { board = Board.fromFEN(START_FEN); moveHistory = []; lastMove = null; vsEngine = false; }
-    render(); renderPanel();
+  }
+  const masteryRows = Object.entries(plan.mastery)
+    .sort((a, b) => a[1].mastery - b[1].mastery || a[0].localeCompare(b[0]))
+    .map(([motif, st]) => `<div style="font-size:.88rem;margin:.3rem 0"><span>${motif}</span> <span style="color:var(--muted)">${st.cleanSolves}/${st.attempts} clean</span><div class="bar"><i style="width:${Math.round(st.mastery * 100)}%"></i></div></div>`).join('');
+  panelEl.innerHTML = `
+    <h2>Today — ${date}</h2>
+    <p style="font-size:.93rem;line-height:1.5">${plan.why}</p>
+    ${plan.focus ? `<p><b>Focus: ${plan.focus}</b></p>` : ''}
+    <h3>Today's puzzles</h3>
+    ${puzzleRows || '<p style="color:var(--muted)">No puzzles in the catalog.</p>'}
+    <h3>Study</h3>
+    ${studyRow || '<p style="color:var(--muted)">Nothing scheduled.</p>'}
+    <h3>Your progress</h3>
+    <div class="stat"><span>Day streak <b>${sum.dayStreak}</b></span><span>Solved <b>${sum.puzzlesSolved}</b></span><span>Games <b>${sum.games.win}W ${sum.games.loss}L ${sum.games.draw}D</b></span><span>Studied <b>${sum.studied}</b></span></div>
+    ${masteryRows ? `<div style="margin-top:.6rem">${masteryRows}</div>` : `<p style="color:var(--muted);font-size:.88rem;line-height:1.5">No history yet — play puzzles and games and this page will learn your game. There is no chat here on purpose: the plan is built from what you play, not what you type.</p>`}`;
+  document.querySelectorAll('.plan-row[data-set]').forEach(el => {
+    el.onclick = () => {
+      const set = el.dataset.set, index = +el.dataset.index;
+      if (set === 'real') { puzzleSet = 'real'; realPuzzleIdx = index; }
+      else { puzzleSet = 'curated'; puzzleIdx = index; }
+      saveTactics();
+      switchMode('tactics');
+    };
+  });
+  const sr = $('#study-row');
+  if (sr) sr.onclick = () => {
+    if (plan.study.type === 'lesson') {
+      lessonView = 'positional'; lessonIdx = plan.study.index; cardIdx = 0;
+    } else {
+      lessonView = 'classics'; classicIdx = plan.study.index;
+    }
+    switchMode('lessons');
   };
+}
+
+// ---------- mode tabs & keyboard ----------
+function switchMode(m) {
+  if (mode === 'tactics') flushPuzzleAttempt();
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x.dataset.mode === m));
+  mode = m;
+  bestArrow = null; analysisResult = null; selected = -1;
+  if (mode === 'tactics') loadPuzzle();
+  else if (mode === 'lessons') {
+    if (lessonView === 'classics') loadClassic();
+    else { cardIdx = 0; loadLessonCard(); }
+    return;
+  }
+  else if (mode === 'today') { renderPanel(); return; }
+  else { board = Board.fromFEN(START_FEN); moveHistory = []; lastMove = null; vsEngine = false; }
+  render(); renderPanel();
+}
+document.querySelectorAll('nav button').forEach(b => {
+  b.onclick = () => switchMode(b.dataset.mode);
 });
 $('#flip-btn').onclick = () => { flipped = !flipped; render(); };
 document.addEventListener('keydown', e => {
