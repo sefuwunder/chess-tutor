@@ -124,6 +124,7 @@ import { LESSONS } from '/src/lessons.js';
 import { CLASSICS } from '/src/classics.js';
 import { REAL_PUZZLES } from '/src/real-puzzles.js';
 import { createStore, planForDay, progressSummary, puzzleDoneToday, todayStr } from '/src/progress.js';
+import { ClassicPlayer } from '/src/classic-player.js';
 
 const GLYPHS = { k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟' };
 const $ = s => document.querySelector(s);
@@ -170,7 +171,8 @@ try {
 let lessonIdx = 0, cardIdx = 0, exerciseDone = false;
 // classic games state (inside the Lessons tab)
 let lessonView = 'positional'; // 'positional' | 'classics'
-let classicIdx = 0, classicPly = 0, classicSans = [];
+let classicIdx = 0, classicPly = 0;
+let classicPlayer = null, classicPlayerIdx = -1; // rebuilt only on game change
 
 // ---------- board rendering ----------
 function sqToXY(sq) {
@@ -598,7 +600,7 @@ function renderLessons() {
         <button class="btn primary" id="card-next">${cardIdx === l.cards.length - 1 ? 'Try the exercise →' : 'Next →'}</button>
       </div>
       <p style="color:var(--muted);font-size:.85rem">${l.intro}</p>`;
-    $('#view-classics').onclick = () => { lessonView = 'classics'; loadClassic(); };
+    $('#view-classics').onclick = () => { lessonView = 'classics'; setClassicPly(classicPly); renderLessons(); };
     $('#lesson-sel').onchange = e => { lessonIdx = +e.target.value; cardIdx = 0; exerciseDone = false; loadLessonCard(); };
     $('#card-prev').onclick = () => { cardIdx--; loadLessonCard(); };
     $('#card-next').onclick = () => { cardIdx++; loadLessonCard(); };
@@ -619,7 +621,7 @@ function renderLessons() {
         <button class="btn" id="ex-retry">Retry</button>
         <button class="btn" id="card-prev">← Back to cards</button>
       </div>`;
-    $('#view-classics').onclick = () => { lessonView = 'classics'; loadClassic(); };
+    $('#view-classics').onclick = () => { lessonView = 'classics'; setClassicPly(classicPly); renderLessons(); };
     $('#lesson-sel').onchange = e => { lessonIdx = +e.target.value; cardIdx = 0; exerciseDone = false; loadLessonCard(); };
     $('#ex-hint').onclick = () => { $('#ex-feedback').textContent = ex.hint; };
     $('#ex-retry').onclick = loadLessonCard;
@@ -627,11 +629,14 @@ function renderLessons() {
     if (exerciseDone) $('#ex-feedback').innerHTML = '<span style="color:var(--good)">Well played — exercise complete.</span>';
   }
 }
-function loadLessonCard() {
+function boardFromLesson() {
   const l = LESSONS[lessonIdx];
   const fen = cardIdx < l.cards.length ? l.cards[cardIdx].fen : l.exercise.fen;
   board = Board.fromFEN(fen);
   moveHistory = []; lastMove = null; bestArrow = null; selected = -1;
+}
+function loadLessonCard() {
+  boardFromLesson();
   exerciseDone = false;
   render(); renderLessons();
 }
@@ -646,52 +651,70 @@ function shortName(full) {
 function resultText(r) {
   return r === '1-0' ? 'White wins' : r === '0-1' ? 'Black wins' : r === '1/2-1/2' ? 'Draw' : r;
 }
-function loadClassic() {
-  const g = classicGame();
-  // SAN list, derived by replaying the UCI moves with the ENGINE's toSan
-  // (the page's toSan reads the live board, not a replay board).
-  const b = Board.fromFEN(START_FEN);
-  classicSans = [];
-  for (const uci of g.moves) {
-    const m = b.legalMoves().find(x => moveToUci(x) === uci);
-    if (!m) break;
-    classicSans.push(b.toSan(m));
-    b.make(m);
+function ensureClassicPlayer() {
+  // One replay per game per session, cached: revisiting a game is free.
+  if (classicPlayerIdx !== classicIdx) {
+    classicPlayer = new ClassicPlayer(classicGame());
+    classicPlayerIdx = classicIdx;
   }
+}
+function loadClassic() {
+  // game change only: fresh player, back to the start, panel rebuilt
+  ensureClassicPlayer();
   setClassicPly(0);
+  renderLessons();
 }
 function setClassicPly(ply) {
-  const g = classicGame();
+  ensureClassicPlayer();
   const prevPly = classicPly;
-  ply = Math.max(0, Math.min(g.moves.length, ply));
-  classicPly = ply;
-  board = Board.fromFEN(START_FEN);
-  moveHistory = []; lastMove = null; bestArrow = null; selected = -1; legalCache = [];
-  for (let i = 0; i < ply; i++) {
-    const m = board.legalMoves().find(x => moveToUci(x) === g.moves[i]);
-    if (!m) break;
-    board.make(m);
-    moveHistory.push({ uci: g.moves[i], san: classicSans[i] });
-    lastMove = { from: m.from, to: m.to };
+  const res = classicPlayer.goto(board, ply);
+  board = res.board; // goto may return a fresh board on the reset path
+  classicPly = res.ply;
+  moveHistory = [];
+  for (let i = 0; i < classicPly; i++) {
+    moveHistory.push({ uci: classicGame().moves[i], san: classicPlayer.sans[i] });
   }
+  const lm = classicPly > 0 ? classicPlayer.moves[classicPly - 1] : null;
+  lastMove = lm ? { from: lm.from, to: lm.to } : null;
+  bestArrow = null; selected = -1; legalCache = [];
   // tutor: stepping into the final position counts as studying the game
   // (jumping with End does not — arriving from the last move is the signal)
-  if (ply === g.moves.length && prevPly === g.moves.length - 1) {
+  if (classicPly === classicPlayer.length && prevPly === classicPlayer.length - 1) {
     const today = todayStr();
     const already = tutorStore.load().some(e => e.kind === 'study' && e.date === today && e.game === classicIdx);
     if (!already) recordTutorEvent({ kind: 'study', game: classicIdx });
   }
-  render(); renderLessons();
+  render();
+  updateClassicStepUI();
+}
+// Fast path for stepping: only the board, the move counter, the current-move
+// highlight, and the step buttons change. The game list and the move list
+// are NOT rebuilt per click (that rebuild was half the old per-click cost).
+function updateClassicStepUI() {
+  const count = $('#cl-count');
+  if (!count) return; // classics panel not currently built
+  const g = classicGame();
+  const done = classicPly >= classicPlayer.length;
+  count.textContent = `Move ${classicPly} of ${classicPlayer.length}${done ? ` — ${resultText(g.result)}` : ''}`;
+  document.querySelectorAll('#classic-moves .cmv').forEach(el => {
+    el.classList.toggle('cur', +el.dataset.ply === classicPly);
+  });
+  $('#cl-start').disabled = classicPly === 0;
+  $('#cl-prev').disabled = classicPly === 0;
+  $('#cl-next').disabled = done;
+  $('#cl-end').disabled = done;
 }
 function renderClassics() {
+  ensureClassicPlayer();
   const g = classicGame();
+  const sans = classicPlayer.sans;
   let movesHtml = '';
-  for (let i = 0; i < classicSans.length; i += 2) {
+  for (let i = 0; i < sans.length; i += 2) {
     movesHtml += `<span class="mn">${i / 2 + 1}.</span> ` +
-      `<span class="cmv${i + 1 === classicPly ? ' cur' : ''}" data-ply="${i + 1}">${classicSans[i]}</span>` +
-      (classicSans[i + 1] ? ` <span class="cmv${i + 2 === classicPly ? ' cur' : ''}" data-ply="${i + 2}">${classicSans[i + 1]}</span>` : '') + ' ';
+      `<span class="cmv${i + 1 === classicPly ? ' cur' : ''}" data-ply="${i + 1}">${sans[i]}</span>` +
+      (sans[i + 1] ? ` <span class="cmv${i + 2 === classicPly ? ' cur' : ''}" data-ply="${i + 2}">${sans[i + 1]}</span>` : '') + ' ';
   }
-  const done = classicPly >= g.moves.length;
+  const done = classicPly >= classicPlayer.length;
   panelEl.innerHTML = `
     <h2>Classic Games</h2>
     <div class="row" style="margin-bottom:.4rem">
@@ -702,7 +725,7 @@ function renderClassics() {
       `<option value="${i}" ${i === classicIdx ? 'selected' : ''}>${i + 1}. ${shortName(x.white)} vs ${shortName(x.black)} (${x.date.slice(0, 4)})</option>`).join('')}</select></div>
     <div class="lesson-card"><p><b>${g.white} vs ${g.black}</b></p>
     <p style="color:var(--muted)">${g.event}${g.site ? ` · ${g.site}` : ''} · ${g.date.slice(0, 4)}${g.eco ? ` · ${g.eco}` : ''}</p>
-    <p>Move ${classicPly} of ${g.moves.length}${done ? ` — ${resultText(g.result)}` : ''}</p></div>
+    <p id="cl-count">Move ${classicPly} of ${classicPlayer.length}${done ? ` — ${resultText(g.result)}` : ''}</p></div>
     <div id="classic-moves">${movesHtml}</div>
     <div class="row">
       <button class="btn" id="cl-start" ${classicPly === 0 ? 'disabled' : ''}>⏮ Start</button>
@@ -711,7 +734,7 @@ function renderClassics() {
       <button class="btn" id="cl-end" ${done ? 'disabled' : ''}>End ⏭</button>
     </div>
     <p style="color:var(--muted);font-size:.85rem">Top 100 games of all time, from chessgames.com's World's Greatest Chess Games collection. Step with ← → or click any move.</p>`;
-  $('#view-positional').onclick = () => { lessonView = 'positional'; cardIdx = 0; loadLessonCard(); };
+  $('#view-positional').onclick = () => { lessonView = 'positional'; boardFromLesson(); render(); renderLessons(); };
   $('#classic-sel').onchange = e => { classicIdx = +e.target.value; loadClassic(); };
   $('#cl-start').onclick = () => setClassicPly(0);
   $('#cl-prev').onclick = () => setClassicPly(classicPly - 1);
@@ -789,26 +812,45 @@ function renderToday() {
     if (plan.study.type === 'lesson') {
       lessonView = 'positional'; lessonIdx = plan.study.index; cardIdx = 0;
     } else {
-      lessonView = 'classics'; classicIdx = plan.study.index;
+      lessonView = 'classics'; classicIdx = plan.study.index; classicPly = 0;
     }
     switchMode('lessons');
   };
 }
 
 // ---------- mode tabs & keyboard ----------
+let analyzeSnapshot = null;
 function switchMode(m) {
   if (mode === 'tactics') flushPuzzleAttempt();
+  // leaving Analyze: snapshot the game so a tab switch never wipes it
+  if (mode === 'analyze') {
+    analyzeSnapshot = { board: board.clone(), moveHistory: [...moveHistory],
+      lastMove, vsEngine, gameMoves: [...gameMoves], gameFlushed,
+      analysisResult, bestArrow };
+  }
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x.dataset.mode === m));
   mode = m;
   bestArrow = null; analysisResult = null; selected = -1;
   if (mode === 'tactics') loadPuzzle();
   else if (mode === 'lessons') {
-    if (lessonView === 'classics') loadClassic();
-    else { cardIdx = 0; loadLessonCard(); }
+    // returning to Lessons restores your place: no card/ply reset
+    if (lessonView === 'classics') { setClassicPly(classicPly); renderPanel(); }
+    else { boardFromLesson(); render(); renderPanel(); }
     return;
   }
   else if (mode === 'today') { renderPanel(); return; }
-  else { board = Board.fromFEN(START_FEN); moveHistory = []; lastMove = null; vsEngine = false; }
+  else if (mode === 'analyze') {
+    // restore the snapshot if there is one; the very first entry starts
+    // fresh (there is no analyze game to lose yet)
+    if (analyzeSnapshot) {
+      board = analyzeSnapshot.board; moveHistory = analyzeSnapshot.moveHistory;
+      lastMove = analyzeSnapshot.lastMove; vsEngine = analyzeSnapshot.vsEngine;
+      gameMoves = analyzeSnapshot.gameMoves; gameFlushed = analyzeSnapshot.gameFlushed;
+      analysisResult = analyzeSnapshot.analysisResult; bestArrow = analyzeSnapshot.bestArrow;
+    } else {
+      board = Board.fromFEN(START_FEN); moveHistory = []; lastMove = null; vsEngine = false;
+    }
+  }
   render(); renderPanel();
 }
 document.querySelectorAll('nav button').forEach(b => {
