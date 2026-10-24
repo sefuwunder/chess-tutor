@@ -15,7 +15,7 @@ A self-hosted web app for learning chess — not just a board, but a teacher. Th
 
 **Tactics trainer**
 - 24 curated puzzles across motifs: forks, pins, skewers, discovered attacks, double checks, back-rank mates, deflection, decoy, clearance, x-ray
-- **Real games · 24**: positions from the top-100 classic games, with attribution (players, event, year, move number) — mate-in-1s the masters actually played, plus captures that swung the eval by 200+ cp. Same bar as curated: engine-best at depth 4 and winning, sanity-gated, and every attribution verified by replaying the source game to the puzzle ply
+- **Real games · 64**: positions from the top-100 classic games, with attribution (players, event, year, move number) — batch 1 (1834–1956): 4 mate-in-1s the masters actually played, plus 20 captures that swung the eval by 200+ cp; batch 2 (1957–1999): 40 more, one per verified game from Tal and Fischer through Karpov–Kasparov to Kasparov's Immortal. Same bar as curated: engine-best at depth 4 and winning, sanity-gated, and every attribution verified by replaying the source game to the puzzle ply. A shared move-11 tabiya reached by three games counts once, under its earliest game.
 - Every puzzle engine-verified: the solution is the engine's best move at depth 4 and winning
 - Streak counter, score, hint button (motif + target square), retry, next; progress persists in localStorage
 
